@@ -1,20 +1,44 @@
-import requests
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.common.by import By
+import os
 
-def scrape_static_page(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    page_title = soup.title.text
-    page_content = soup.get_text()
-    return page_title, page_content
+from dotenv import load_dotenv,find_dotenv
 
-def scrape_dynamic_page(url):
-    driver = webdriver.Chrome() 
-    driver.get(url)
-    driver.implicitly_wait(5) 
-    page_title = driver.title
-    page_content = driver.find_element(By.TAG_NAME, "body").text
-    driver.quit()
-    return page_title, page_content
+from langchain_community.vectorstores import Chroma
+
+from langchain_ollama import OllamaEmbeddings
+from langchain_community.document_loaders import RecursiveUrlLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+load_dotenv(find_dotenv())
+
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+db_dir = os.path.join(current_dir, "db")
+persistent_directory = os.path.join(db_dir, "chroma_db_with_metadata")
+
+
+def webscraper(query):
+
+    urls = ["https://www.salaryse.com/"]
+
+    loader = RecursiveUrlLoader(urls)
+    documents = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=100)
+    docs = text_splitter.split_documents(documents)
+
+    embeddings = OllamaEmbeddings(model="llama3.1")
+
+
+    if not os.path.exists(persistent_directory):
+        db = Chroma.from_documents(docs, embeddings, persist_directory=persistent_directory)
+    else:
+        db = Chroma(persist_directory=persistent_directory, embedding_function=embeddings)
+
+    retriever = db.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 3},
+    )
+
+    relevant_docs = retriever.get_relevant_documents(query)
+
+    return "\n\n".join([doc.page_content for doc in relevant_docs])

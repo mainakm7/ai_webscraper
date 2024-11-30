@@ -1,18 +1,22 @@
 from langchain.agents import initialize_agent, Tool, AgentType
 from langchain.prompts import PromptTemplate
+from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain.agents import AgentExecutor
-from llm_definition import LlamaLLM
-from scaper import scrape_dynamic_page, scrape_static_page
+from langchain_ollama import ChatOllama
+from scaper import webscraper
 
 
-llama_llm = LlamaLLM()
+llama_llm = ChatOllama(model="llama3.1")
 
 scraping_tool = Tool(
     name="web_scraper",
-    func=scrape_static_page, 
-    description="Use this tool to scrape data from a website."
+    func=webscraper, 
+    description="Use this tool to scrape data from the company website to gather company details."
 )
 
+memory = ConversationBufferMemory(
+    memory_key="chat_history", return_messages=True)
 
 tools = [scraping_tool]
 prompt_template = """
@@ -22,10 +26,19 @@ Otherwise, generate a response using the Llama model.
 Query: {query}
 """
 
-
+prompt_structured = PromptTemplate.from_template(prompt_template)
 agent = initialize_agent(
     tools=tools,
     agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
     llm=llama_llm,
+    prompt=prompt_structured,
     verbose=True
+)
+
+agentexecutor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    memory=memory, 
+    handle_parsing_errors=True,
+    
 )
