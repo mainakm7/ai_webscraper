@@ -16,7 +16,7 @@ from langchain.schema import Document
 
 load_dotenv(find_dotenv())
 
-llm = ChatOllama(model="llama3.1", temperature=0.5)
+llm = ChatOllama(model="llama3.1", temperature=0.6)
 
 class GraphState(TypedDict):
     question: str
@@ -81,11 +81,13 @@ def generate(state: GraphState) -> GraphState:
     documents = state["documents"]
     
     prompt = PromptTemplate(
-        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|> You are an assistant for question-answering tasks. 
-        Use the following pieces of retrieved context to answer the question. 
-        If you don't know the answer, just say that you don't know. 
-        Give a detailed output as a string but limit the response to 5 lines maximum.
-        user
+        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|> You are an AI assistant representing SalarySe, 
+        specializing in answering questions about our company, products, and services from our perspective. 
+        Speak as if you are part of the company, using "we" to represent SalarySe. 
+        Provide clear and concise answers with a maximum of 10 lines. 
+        If the information is not available or unclear, respond with "I'm sorry, I don't have that information." 
+        Tailor responses to maintain a professional and informative tone.
+        
         Question: {question}
         Context: {context}
         Answer: 
