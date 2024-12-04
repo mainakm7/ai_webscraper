@@ -1,7 +1,15 @@
 import requests
 import pyttsx3
 import gradio as gr
-from deep_translator import GoogleTranslator
+from pyngrok import ngrok
+from dotenv import load_dotenv, find_dotenv
+import os
+
+load_dotenv(find_dotenv())
+ngrok_auth_token = os.environ.get("ngrok_auth_token")
+ngrok.set_auth_token(ngrok_auth_token)
+public_url = ngrok.connect(7860)
+print(f"Public URL: {public_url}")
 
 def get_response(question):
     url = "http://localhost:8000/ask"
@@ -49,19 +57,5 @@ with gr.Blocks() as iface:
     listen_btn.click(play_response_tts, inputs=output_box, outputs=[])
 
 
-iface.launch()
-
-
-# ai_answer = requests.post("http://localhost:8000/ask", json={"question":"tell me about salaryse","thread":"1"}).json()
-# print(ai_answer)
-
-# def play_response_tts(ai_response):
-#     engine = pyttsx3.init()
-#     voices = engine.getProperty('voices')
-#     engine.setProperty('voice', voices[1].id)  # Change index for different voices
-#     engine.say(ai_response)
-#     engine.runAndWait()
-
-# play_response_tts(ai_answer)
-
+iface.launch(server_port=7860)
 
