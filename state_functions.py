@@ -11,7 +11,9 @@ from typing import TypedDict, List
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_community.tools import TavilySearchResults
 from langchain.schema import Document
-
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 load_dotenv(find_dotenv())
 
@@ -50,11 +52,33 @@ else:
 retriever = db.as_retriever()
 
 
-def retrieve(state: GraphState) -> GraphState:
+# def retrieve(state: GraphState) -> GraphState:
     
-    """
-    Retrieve documents from the Chroma vectorstore.
+#     """
+#     Retrieve documents from the Chroma vectorstore.
 
+#     Args:
+#         state (GraphState): Current state containing the user query.
+
+#     Returns:
+#         GraphState: Updated state with retrieved documents.
+#     """
+#     question = state["question"]
+#     rag_docs = retriever.invoke(question)
+
+    
+#     retrieved_docs = [doc.page_content for doc in rag_docs]
+
+#     updated_state = state.copy()
+#     updated_state["documents"] = retrieved_docs
+#     return updated_state 
+
+
+
+async def retrieve_async(state: GraphState) -> GraphState:
+    """
+    Asynchronously retrieve documents from the Chroma vectorstore.
+    
     Args:
         state (GraphState): Current state containing the user query.
 
@@ -62,17 +86,16 @@ def retrieve(state: GraphState) -> GraphState:
         GraphState: Updated state with retrieved documents.
     """
     question = state["question"]
-    rag_docs = retriever.invoke(question)
+    rag_docs = await retriever.ainvoke(question)
 
-    
     retrieved_docs = [doc.page_content for doc in rag_docs]
 
     updated_state = state.copy()
     updated_state["documents"] = retrieved_docs
-    return updated_state 
+    return updated_state
 
 
-def generate(state: GraphState) -> GraphState:
+async def generate(state: GraphState) -> GraphState:
     """
     Generate an answer using RAG (Retrieve and Generate) on retrieved documents.
 
@@ -105,7 +128,7 @@ def generate(state: GraphState) -> GraphState:
     rag_chain = prompt | llm | StrOutputParser()
 
     try:
-        generation = rag_chain.invoke({"context": context, "question": question})
+        generation = await rag_chain.ainvoke({"context": context, "question": question})
     except Exception as e:
         generation = f"I'm sorry, an error occurred while generating the response: {str(e)}"
 
@@ -114,8 +137,9 @@ def generate(state: GraphState) -> GraphState:
     updated_state["generation"] = generation.strip()
     return updated_state
 
-    
-def grade_documents(state: dict) -> dict:
+
+   
+async def grade_documents(state: dict) -> dict:
     """
     Filter out irrelevant documents based on relevance grading.
 
@@ -150,7 +174,7 @@ def grade_documents(state: dict) -> dict:
     retrieval_grader = prompt | llm | JsonOutputParser()
 
     
-    response = retrieval_grader.invoke({"context": doc_contents, "question": question})
+    response = await retrieval_grader.ainvoke({"context": doc_contents, "question": question})
     grade = response.get("score", "").lower()
 
     
@@ -167,32 +191,52 @@ def grade_documents(state: dict) -> dict:
 
 
 
-def web_search(state: dict) -> dict:
+# def web_search(state: dict) -> dict:
+#     """
+#     Retrieve docs from a web search.
+
+#     Args:
+#         state (dict): A dictionary containing the current state, including "question" and "documents".
+
+#     Returns:
+#         dict: Updated state with formatted docs added to the "documents" key and other state data preserved.
+#     """
+#     question = state.get("question")
+#     documents = state.get("documents", [])
+
+#     tavily_search = TavilySearchResults(max_results=3)
+#     search_docs = tavily_search.invoke(question)
+    
+#     search_results = "\n".join([doc["content"] for doc in search_docs])
+#     web_results = Document(page_content=search_results)
+   
+#     documents.append(web_results)
+#     doc_contents = "\n\n".join(doc.page_content for doc in documents)
+
+#     updated_state = state.copy()
+#     updated_state["documents"] = doc_contents
+#     return updated_state
+
+async def web_search_async(state: GraphState) -> GraphState:
     """
-    Retrieve docs from a web search.
-
-    Args:
-        state (dict): A dictionary containing the current state, including "question" and "documents".
-
-    Returns:
-        dict: Updated state with formatted docs added to the "documents" key and other state data preserved.
+    Perform a web search asynchronously to fetch documents concurrently.
     """
     question = state.get("question")
     documents = state.get("documents", [])
 
     tavily_search = TavilySearchResults(max_results=3)
-    search_docs = tavily_search.invoke(question)
-    
+
+    search_docs = await tavily_search.ainvoke(question)
+
     search_results = "\n".join([doc["content"] for doc in search_docs])
     web_results = Document(page_content=search_results)
-   
+
     documents.append(web_results)
     doc_contents = "\n\n".join(doc.page_content for doc in documents)
 
     updated_state = state.copy()
     updated_state["documents"] = doc_contents
     return updated_state
-
 
 def decide_to_generate(state):
     
@@ -212,7 +256,7 @@ def decide_to_generate(state):
         return "websearch"
 
 
-def hallucination_check(state: GraphState) -> str:
+async def hallucination_check(state: GraphState) -> str:
     """
     Decides if the generated output is hallucinated or grounded in relevant documents.
 
@@ -261,9 +305,9 @@ def hallucination_check(state: GraphState) -> str:
     answer_grader = answer_prompt | llm | JsonOutputParser()
 
     try:
-        hallucination_response = hallucination_grader.invoke({"generation": generation, "documents": combined_docs})
+        hallucination_response = await hallucination_grader.ainvoke({"generation": generation, "documents": combined_docs})
         if hallucination_response["score"].lower() == "yes":
-            answer_response = answer_grader.invoke({"generation": generation, "question": question})
+            answer_response = await answer_grader.ainvoke({"generation": generation, "question": question})
             if answer_response["score"].lower() == "yes":
                 return "useful"
             else:
@@ -273,36 +317,5 @@ def hallucination_check(state: GraphState) -> str:
     except Exception as e:
         return f"error: {str(e)}"
 
-  
-# def route_question(state):
-    
-#     """
-#        Decides whether to go to vectorstore or websearch based on user question
-       
-#        Args: state (GraphState)
-       
-#        returns: A string to denote the routed node
-#     """
-    
-#     question = state["question"]
-    
-#     prompt = PromptTemplate(
-#         template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-#         You are an expert at routing a user question to a vectorstore or web search. 
-#         Use the vectorstore for questions on LLM agents, prompt engineering, and adversarial attacks. 
-#         You do not need to be stringent with the keywords in the question related to these topics. 
-#         Otherwise, use web-search. Give a binary choice 'web_search' or 'vectorstore' based on the question. 
-#         Return the a JSON with a single key 'datasource' and no preamble or explanation. Question to route: {question} 
-#         <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
-#         input_variables=["question"],
-#     )
 
-#     question_router = prompt | llm | StrOutputParser()
-    
-#     response = question_router.invoke({"question":question})
-    
-#     if response["datasource"] == "web_search":
-#         return "websearch"
-#     else:
-#         return "vectorstore"
     
