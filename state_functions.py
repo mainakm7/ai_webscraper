@@ -13,8 +13,8 @@ from langchain_community.tools import TavilySearchResults
 from langchain.schema import Document
 
 
-
 load_dotenv(find_dotenv())
+
 
 llm = ChatOllama(model="llama3.1", temperature=0.6)
 
@@ -22,67 +22,74 @@ class GraphState(TypedDict):
     question: str
     generation: str
     web_search: str
-    documents: List[str] = []
-    
+    documents: List[str]
 
-    
+
 db_dir = os.path.join(os.getcwd(), "db")
 persistent_directory = os.path.join(db_dir, "chroma_db_with_metadata2")
 
+urls = ["https://www.salaryse.com/"]
+
+
+docs = [WebBaseLoader(url).load() for url in urls]
+docs_list = [doc for sublist in docs for doc in sublist]
+
+
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=1000, chunk_overlap=100)
+doc_splits = text_splitter.split_documents(docs_list)
+
+
+embeddings = NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
+
+
+if not os.path.exists(persistent_directory):
+    db = Chroma.from_documents(documents=doc_splits, embedding=embeddings, persist_directory=persistent_directory)
+else:
+    db = Chroma(persist_directory=persistent_directory, embedding_function=embeddings)
+
+retriever = db.as_retriever()
+
+
 def retrieve(state: GraphState) -> GraphState:
     
-    """Retrieve documents from the Chroma vectorstore
-    
-        Args: state (GraphState)
-        
-        returns: formatted docs as a list to state["context"]
-    
     """
-    
-    urls = [
-    "https://www.salaryse.com/"
-    ]
+    Retrieve documents from the Chroma vectorstore.
 
-    docs = [WebBaseLoader(url).load() for url in urls]
-    docs_list = [item for sublist in docs for item in sublist]
+    Args:
+        state (GraphState): Current state containing the user query.
 
-    text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=1000, chunk_overlap=100)
-    doc_splits = text_splitter.split_documents(docs_list)
-    embeddings=NomicEmbeddings(model="nomic-embed-text-v1.5", inference_mode="local")
-    
-    
-    if not os.path.exists(persistent_directory):
-            db = Chroma.from_documents(documents=doc_splits, embedding=embeddings, persist_directory=persistent_directory)
-    else:
-        db = Chroma(persist_directory=persistent_directory, embedding_function=embeddings)
-    retriever = db.as_retriever()
-    
+    Returns:
+        GraphState: Updated state with retrieved documents.
+    """
     question = state["question"]
-    rag_docs = retriever.invoke(state["question"])
-    
+    rag_docs = retriever.invoke(question)
 
-    return {"documents": rag_docs,"question":question} 
+    
+    retrieved_docs = [doc.page_content for doc in rag_docs]
+
+    updated_state = state.copy()
+    updated_state["documents"] = retrieved_docs
+    return updated_state 
 
 
 def generate(state: GraphState) -> GraphState:
-    
     """
-    
-    Generate answer using RAG on retrieved documents
+    Generate an answer using RAG (Retrieve and Generate) on retrieved documents.
 
     Args:
-        state (GraphState)
+        state (GraphState): Current state containing the user query and retrieved documents.
 
     Returns:
-        GraphState: new key to GraphState :generation
+        GraphState: Updated state with a new key `generation` containing the generated response.
     """
-    
     question = state["question"]
     documents = state["documents"]
-    
+
+    context = "\n\n".join(documents) if documents else "No relevant context available."
+
     prompt = PromptTemplate(
-        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|> You are an AI assistant representing SalarySe, 
-        specializing in answering questions about our company, products, and services from our perspective. 
+        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        You are an AI assistant representing SalarySe, specializing in answering questions about our company, products, and services from our perspective. 
         Speak as if you are part of the company, using "we" to represent SalarySe. 
         Provide clear and concise answers with a maximum of 10 lines. 
         If the information is not available or unclear, respond with "I'm sorry, I don't have that information." 
@@ -90,86 +97,100 @@ def generate(state: GraphState) -> GraphState:
         
         Question: {question}
         Context: {context}
-        Answer: 
+        Answer:
         <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
         input_variables=["question", "context"]
     )
 
     rag_chain = prompt | llm | StrOutputParser()
-    
-    
-    generation = rag_chain.invoke({"context":documents, "question":question})
-    return {"generation":generation, "documents":documents, "question":question}
-    
-    
 
-def grade_documents(state: GraphState) -> GraphState:
+    try:
+        generation = rag_chain.invoke({"context": context, "question": question})
+    except Exception as e:
+        generation = f"I'm sorry, an error occurred while generating the response: {str(e)}"
+
+    # Update the state with the generated response
+    updated_state = state.copy()
+    updated_state["generation"] = generation.strip()
+    return updated_state
+
     
+def grade_documents(state: dict) -> dict:
     """
-    
-    Filter out irrelevant documents
+    Filter out irrelevant documents based on relevance grading.
 
     Args:
-        state (GraphState)
+        state (dict): A dictionary containing the current state, including "documents" and "question".
 
     Returns:
-        GraphState: new key to GraphState :generation
+        dict: Updated state with filtered documents and an indication if web search is needed.
     """
-    
-    question = state["question"]
-    documents = state["documents"]
-    
+    documents = state.get("documents", [])
+    question = state.get("question", "")
+
+    # Combine document contents for evaluation
+    doc_contents = "\n\n".join(doc.page_content for doc in documents)
+    web_search = "No"
+
+    # Define the grading prompt
     prompt = PromptTemplate(
         template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are a grader assessing relevance of a retrieved document to a user question. 
+        You are a grader assessing the relevance of a retrieved document to a user question.
         If the document contains keywords related to the user question, grade it as relevant. 
         It does not need to be a stringent test. The goal is to filter out erroneous retrievals.
-        Give a binary score 'yes' or 'no' to indicate whether the document is relevant to the question.
-        Provide the binary score as a JSON with a single key 'score' and no preamble or explanation.
-        user
+        Provide a binary score as JSON with a single key 'score' and no preamble or explanation.
+        User:
         Here is the retrieved document: \n\n {context} \n\n
         Here is the user question: {question} \n <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
-        input_variables=["question", "context"]
+        input_variables=["question", "context"],
     )
-    
-    filtered_docs = []
-    web_search = "No"
-    retrieval_grader = prompt | llm | JsonOutputParser()
-    
-    for doc in documents:
-        score = retrieval_grader.invoke({"context":doc.page_content, "question":question})
-        grade = score["score"]
-        
-        if grade.lower() == "yes":
-            filtered_docs.append(doc)
-        else:
-            web_search = "Yes"
-            continue
-    return {"documents":filtered_docs, "question":question, "web_search": web_search}
 
-def web_search(state: GraphState) -> GraphState:
-    
-    """ Retrieve docs from web search 
-    
-        Args: state (GraphState)
-        
-        returns: formatted docs as a list to state["context"]
-    
+    # Create the grading pipeline
+    retrieval_grader = prompt | llm | JsonOutputParser()
+
+    # Invoke the grading process
+    response = retrieval_grader.invoke({"context": doc_contents, "question": question})
+    grade = response.get("score", "").lower()
+
+    # Filter documents or mark for additional web search
+    filtered_docs = []
+    if grade == "yes":
+        filtered_docs.append(doc_contents)
+    else:
+        web_search = "Yes"
+
+    # Return updated state
+    updated_state = state.copy()
+    updated_state.update({"documents": filtered_docs, "web_search": web_search})
+    return updated_state
+
+
+
+def web_search(state: dict) -> dict:
     """
-    question = state["question"]
-    documents = state["documents"]
-    
+    Retrieve docs from a web search.
+
+    Args:
+        state (dict): A dictionary containing the current state, including "question" and "documents".
+
+    Returns:
+        dict: Updated state with formatted docs added to the "documents" key and other state data preserved.
+    """
+    question = state.get("question")
+    documents = state.get("documents", [])
+
     tavily_search = TavilySearchResults(max_results=3)
-    search_docs = tavily_search.invoke(state['question'])
+    search_docs = tavily_search.invoke(question)
+    
     search_results = "\n".join([doc["content"] for doc in search_docs])
     web_results = Document(page_content=search_results)
-    
-    if documents is not None:
-        documents.append(web_results)
-    else:
-        documents = [web_results]
+   
+    documents.append(web_results)
+    doc_contents = "\n\n".join(doc.page_content for doc in documents)
 
-    return {"documents": documents,"question":question} 
+    updated_state = state.copy()
+    updated_state["documents"] = doc_contents
+    return updated_state
 
 
 def decide_to_generate(state):
@@ -190,92 +211,97 @@ def decide_to_generate(state):
         return "websearch"
 
 
-def hallucination_check(state):
-    
+def hallucination_check(state: GraphState) -> str:
     """
-       Decides if generated output is llm hallucination or feom relevant document
-       
-       Args: state (GraphState)
-       
-       returns: A string to denote the routed node
-    
+    Decides if the generated output is hallucinated or grounded in relevant documents.
+
+    Args:
+        state (GraphState): Contains `generation`, `documents`, and `question`.
+
+    Returns:
+        str: A routed node string indicating one of three states:
+             - "useful": The answer is grounded and resolves the question.
+             - "not useful": The answer is grounded but does not resolve the question.
+             - "not supported": The answer is not grounded in the provided documents.
     """
-    
     generation = state["generation"]
     documents = state["documents"]
     question = state["question"]
     
-    #### Hallucination grader
-    prompt = PromptTemplate(
-    template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-    You are a grader assessing whether an answer is grounded in / supported by a set of facts. 
-    Give a binary 'yes' or 'no' score to indicate whether the answer is grounded in / supported by a set of facts. 
-    Provide the binary score as a JSON with a single key 'score' and no preamble or explanation. user
-    Here are the facts:
-    \n ------- \n
-    {documents}
-    \n ------- \n
-    Here is the answer: {generation} 
-    <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
-    input_variables=["generation", "documents"],
+    combined_docs = "\n\n".join(documents) if documents else "No relevant documents provided."
+    
+    hallucination_prompt = PromptTemplate(
+        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        You are a grader assessing whether an answer is grounded in / supported by a set of facts. 
+        Give a binary 'yes' or 'no' score to indicate whether the answer is grounded in / supported by a set of facts. 
+        Provide the binary score as a JSON with a single key 'score' and no preamble or explanation. user
+        Here are the facts:
+        \n ------- \n
+        {documents}
+        \n ------- \n
+        Here is the answer: {generation} 
+        <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
+        input_variables=["generation", "documents"]
     )
 
-    hallucination_grader = prompt | llm | JsonOutputParser()
     
-    ### Answer grader
-    prompt_answer = PromptTemplate(
+    answer_prompt = PromptTemplate(
         template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are a grader assessing whether an answer addresses / resolves a question \n 
-        Give a binary score 'yes' or 'no'. Yes' means that the answer resolves the question.
+        You are a grader assessing whether an answer addresses / resolves a question. 
+        Give a binary 'yes' or 'no' score to indicate if the answer resolves the question.
         Provide the binary score as a JSON with a single key 'score' and no preamble or explanation. user
         The answer is: {generation}
         The question is: {question}
-        <|eot_id|><|start_header_id|>assistant<|end_header_id|>  
-        """,
-    input_variables=["generation", "question"],
-    )
-    
-    answer_grader = prompt_answer| llm | JsonOutputParser()
-    response = hallucination_grader.invoke({"generation": generation,"documents":documents})
-    
-    if response["score"].lower() == "yes":
-        answer_check = answer_grader.invoke({"generation": generation, "question":question})
-        if answer_check["score"].lower() == "yes":
-            return "useful"
-        else:
-            return "not useful"
-    else:
-        return "not supported"
-  
-def route_question(state):
-    
-    """
-       Decides whether to go to vectorstore or websearch based on user question
-       
-       Args: state (GraphState)
-       
-       returns: A string to denote the routed node
-    """
-    
-    question = state["question"]
-    
-    prompt = PromptTemplate(
-        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are an expert at routing a user question to a vectorstore or web search. 
-        Use the vectorstore for questions on LLM agents, prompt engineering, and adversarial attacks. 
-        You do not need to be stringent with the keywords in the question related to these topics. 
-        Otherwise, use web-search. Give a binary choice 'web_search' or 'vectorstore' based on the question. 
-        Return the a JSON with a single key 'datasource' and no preamble or explanation. Question to route: {question} 
         <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
-        input_variables=["question"],
+        input_variables=["generation", "question"]
     )
 
-    question_router = prompt | llm | StrOutputParser()
+    hallucination_grader = hallucination_prompt | llm | JsonOutputParser()
+    answer_grader = answer_prompt | llm | JsonOutputParser()
+
+    try:
+        hallucination_response = hallucination_grader.invoke({"generation": generation, "documents": combined_docs})
+        if hallucination_response["score"].lower() == "yes":
+            answer_response = answer_grader.invoke({"generation": generation, "question": question})
+            if answer_response["score"].lower() == "yes":
+                return "useful"
+            else:
+                return "not useful"
+        else:
+            return "not supported"
+    except Exception as e:
+        return f"error: {str(e)}"
+
+  
+# def route_question(state):
     
-    response = question_router.invoke({"question":question})
+#     """
+#        Decides whether to go to vectorstore or websearch based on user question
+       
+#        Args: state (GraphState)
+       
+#        returns: A string to denote the routed node
+#     """
     
-    if response["datasource"] == "web_search":
-        return "websearch"
-    else:
-        return "vectorstore"
+#     question = state["question"]
+    
+#     prompt = PromptTemplate(
+#         template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+#         You are an expert at routing a user question to a vectorstore or web search. 
+#         Use the vectorstore for questions on LLM agents, prompt engineering, and adversarial attacks. 
+#         You do not need to be stringent with the keywords in the question related to these topics. 
+#         Otherwise, use web-search. Give a binary choice 'web_search' or 'vectorstore' based on the question. 
+#         Return the a JSON with a single key 'datasource' and no preamble or explanation. Question to route: {question} 
+#         <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
+#         input_variables=["question"],
+#     )
+
+#     question_router = prompt | llm | StrOutputParser()
+    
+#     response = question_router.invoke({"question":question})
+    
+#     if response["datasource"] == "web_search":
+#         return "websearch"
+#     else:
+#         return "vectorstore"
     
