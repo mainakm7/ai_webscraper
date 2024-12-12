@@ -3,6 +3,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_nomic.embeddings import NomicEmbeddings
 from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from dotenv import load_dotenv, find_dotenv
@@ -16,7 +17,8 @@ from langchain.schema import Document
 load_dotenv(find_dotenv())
 
 
-llm = ChatOllama(model="llama3.1", temperature=0.6)
+# llm = ChatOllama(model="llama3.1", temperature=0.6)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.6)
 
 class GraphState(TypedDict):
     question: str

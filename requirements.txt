@@ -50,6 +50,7 @@ gpt4all==2.8.2
 gradio==5.7.1
 gradio_client==1.5.0
 greenlet==3.1.1
+groq==0.13.0
 grpcio==1.68.1
 h11==0.14.0
 h2==3.2.0
@@ -83,6 +84,7 @@ langchain-anthropic==0.3.0
 langchain-chroma==0.1.4
 langchain-community==0.3.8
 langchain-core==0.3.21
+langchain-groq==0.2.1
 langchain-nomic==0.1.4
 langchain-ollama==0.2.0
 langchain-openai==0.2.10
