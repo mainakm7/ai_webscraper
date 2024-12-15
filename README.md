@@ -139,5 +139,5 @@ If you wish to deploy on Groq hardware:
 ---
 
 ## License
-This project is licensed under the MIT License.
+This project is licensed under the Apache License.
 
