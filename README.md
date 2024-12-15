@@ -56,9 +56,10 @@ eg: ollama pull gemma2:27b or ollama pull llama2:70b
 The backend is implemented using FastAPI. To start the server:
 
 ```bash
-python ai_app.py
+uvicorn ai_app:app --reload
 ```
 This will start the server, exposing the endpoint for posting queries.
+you can test the endpoint directly from http://server_address:port/docs (Default eg: http://localhost:8000/docs)
 
 ### Frontend: Gradio Interface
 The frontend is implemented using Gradio. To start the interface:
@@ -67,6 +68,7 @@ The frontend is implemented using Gradio. To start the interface:
 python main.py
 ```
 The Gradio app will connect to the FastAPI backend and allow users to post queries.
+There is a ngrok interface included for sharing. You will need a ngrok_auth_token for use
 
 ---
 

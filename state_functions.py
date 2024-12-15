@@ -237,10 +237,10 @@ def hallucination_check(state: GraphState) -> str:
     
     hallucination_prompt = PromptTemplate(
         template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-        You are a grader assessing whether an answer is grounded in / supported by a set of facts. 
-        Give a binary 'yes' or 'no' score to indicate whether the answer is grounded in / supported by a set of facts. 
+        You are a grader assessing whether an answer is grounded in / supported by our context document. 
+        Give a binary 'yes' or 'no' score to indicate whether the answer is grounded in / supported by our context document. 
         Provide the binary score as a JSON with a single key 'score' and no preamble or explanation. user
-        Here are the facts:
+        Here is the context document:
         \n ------- \n
         {documents}
         \n ------- \n
