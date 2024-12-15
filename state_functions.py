@@ -17,10 +17,12 @@ from langchain.schema import Document
 load_dotenv(find_dotenv())
 
 
-# llm = ChatOllama(model="llama3.1", temperature=0.6)
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.6)
+# llm = ChatOllama(model="llama2:7b", temperature=0.7)
+llm = ChatGroq(model="llama3-70b-8192", temperature=0.7)
+# llm = ChatOllama(model="gemma2:27b", temperature=0.7)
 
 class GraphState(TypedDict):
+    datasource: str
     question: str
     generation: str
     web_search: str
@@ -276,35 +278,74 @@ def hallucination_check(state: GraphState) -> str:
         return f"error: {str(e)}"
 
   
-# def route_question(state):
-    
-#     """
-#        Decides whether to go to vectorstore or websearch based on user question
-       
-#        Args: state (GraphState)
-       
-#        returns: A string to denote the routed node
-#     """
-    
-#     question = state["question"]
-    
-#     prompt = PromptTemplate(
-#         template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-#         You are an expert at routing a user question to a vectorstore or web search. 
-#         Use the vectorstore for questions on LLM agents, prompt engineering, and adversarial attacks. 
-#         You do not need to be stringent with the keywords in the question related to these topics. 
-#         Otherwise, use web-search. Give a binary choice 'web_search' or 'vectorstore' based on the question. 
-#         Return the a JSON with a single key 'datasource' and no preamble or explanation. Question to route: {question} 
-#         <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
-#         input_variables=["question"],
-#     )
+def route_question(state):
+    """
+       Decides whether to go to RAG or directly answer using the LLM
 
-#     question_router = prompt | llm | StrOutputParser()
+       Args: state (GraphState)
+
+       returns: A string to denote the routed node
+    """
+
+    question = state["question"]
+
+    prompt = PromptTemplate(
+        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        You are an expert assistant in determining whether to directly answer a user question with the LLM's knowledge 
+        or use RAG (Retrieval Augmented Generation) for a more context-based response. 
+        Use RAG for questions on specific factual data, document-based knowledge, or retrieval-heavy topics. 
+        For open-ended, opinion-based, or general knowledge questions, answer directly with the LLM. 
+        If you don't know the question reroute to RAG.
+        Return a JSON with a single key 'datasource' and no preamble or explanation. 
+        Options are 'rag' or 'direct_answer'. Question to route: {question} 
+        <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
+        input_variables=["question"],
+    )
+
+    question_router = prompt | llm | JsonOutputParser()
+
+    response = question_router.invoke({"question": question})
+
+    if response["datasource"] == "rag":
+        return "vectorstore"
+    else:
+        return "direct_answer"
+
     
-#     response = question_router.invoke({"question":question})
-    
-#     if response["datasource"] == "web_search":
-#         return "websearch"
-#     else:
-#         return "vectorstore"
-    
+def generate_direct(state: GraphState) -> GraphState:
+    """
+    Generate an answer directly by LLM.
+
+    Args:
+        state (GraphState): Current state containing the user query and retrieved documents.
+
+    Returns:
+        GraphState: Updated state with a new key `generation` containing the generated response.
+    """
+    question = state["question"]
+
+
+    prompt = PromptTemplate(
+        template="""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        You are an AI assistant representing SalarySe, specializing in answering questions about our company, products, and services from our perspective. 
+        Speak as if you are part of the company, using "we" to represent SalarySe. 
+        Provide clear and concise answers with a maximum of 10 lines. 
+        Tailor responses to maintain a professional and informative tone.
+        
+        Question: {question}
+        Answer:
+        <|eot_id|><|start_header_id|>assistant<|end_header_id|>""",
+        input_variables=["question", "context"]
+    )
+
+    rag_chain = prompt | llm | StrOutputParser()
+
+    try:
+        generation = rag_chain.invoke({"question": question})
+    except Exception as e:
+        generation = f"I'm sorry, an error occurred while generating the response: {str(e)}"
+
+    # Update the state with the generated response
+    updated_state = state.copy()
+    updated_state["generation"] = generation.strip()
+    return updated_state
